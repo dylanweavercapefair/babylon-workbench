@@ -38,13 +38,55 @@
       position: fixed; top: 12px; right: 14px; padding: 6px 12px; border-radius: 8px;
       background: rgba(28, 31, 38, 0.85); color: #94a3b8; font-size: 12px; z-index: 10;
     }
+
+    /* AI Notebook Panel */
+    #aiToggle {
+      position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+      padding: 8px 16px; border-radius: 12px; border: 1px solid #3a3f4b;
+      background: rgba(28, 31, 38, 0.9); color: #e2e8f0; font-size: 13px; font-weight: 600;
+      z-index: 20; backdrop-filter: blur(8px);
+    }
+    #aiPanel {
+      position: fixed; top: 50px; right: 12px; width: 320px; max-height: 70vh;
+      background: rgba(28, 31, 38, 0.95); border: 1px solid #3a3f4b; border-radius: 16px;
+      padding: 12px; overflow-y: auto; z-index: 20; display: none; backdrop-filter: blur(8px);
+      color: #e2e8f0; font-size: 12px;
+    }
+    #aiPanel.open { display: block; }
+    #aiPanel h3 { margin: 8px 0 4px; font-size: 13px; color: #94a3b8; }
+    #aiPanel textarea {
+      width: 100%; height: 80px; background: #1a1c20; color: #e2e8f0;
+      border: 1px solid #3a3f4b; border-radius: 8px; padding: 6px; font-family: monospace; font-size: 11px;
+      resize: vertical;
+    }
+    #aiPanel button {
+      margin: 4px 4px 4px 0; padding: 6px 10px; border-radius: 8px; border: 1px solid #3a3f4b;
+      background: #262a33; color: #e2e8f0; font-size: 12px;
+    }
+    #logList, #alertList { max-height: 100px; overflow-y: auto; background: #1a1c20; padding: 6px; border-radius: 6px; margin-bottom: 8px; }
   </style>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
 </head>
 <body>
   <canvas id="renderCanvas"></canvas>
 
-  <div id="status">Fingers: Orbit/Zoom | Pencil: Select &amp; Drag</div>
+  <div id="status">Fingers: Orbit/Zoom | Pencil: Select & Drag</div>
+
+  <button id="aiToggle">AI Notebook</button>
+  <div id="aiPanel">
+    <h3>Bible</h3>
+    <div id="bible">Single HTML file. Pencil for edit, fingers for camera. Log every change. No permanent edits without user Accept.</div>
+    <h3>Map</h3>
+    <div id="map">Editor: main canvas + docks. AI Notebook: this panel. Symbols: TBD.</div>
+    <h3>Log</h3>
+    <div id="logList"></div>
+    <h3>Alerts</h3>
+    <div id="alertList"></div>
+    <h3>Code Injector</h3>
+    <textarea id="codeBox" placeholder="Paste code here to preview..."></textarea><br>
+    <button id="btnPreview">Preview</button>
+    <button id="btnLog">Log this</button>
+  </div>
 
   <div id="leftDock">
     <button class="dock-btn" id="btnShift">SHIFT</button>
@@ -258,6 +300,49 @@
       applyTransform(action.after);
       undoStack.push(action);
     };
+
+    // AI Notebook
+    const notebook = {
+      log: [],
+      alerts: []
+    };
+
+    function renderNotebook() {
+      document.getElementById("logList").innerHTML = notebook.log.map(e => `<div>${e.time} - ${e.agent}: ${e.summary}</div>`).join("") || "(empty)";
+      document.getElementById("alertList").innerHTML = notebook.alerts.map(e => `<div>${e.time} - ${e.message}</div>`).join("") || "(none)";
+    }
+
+    document.getElementById("aiToggle").onclick = () => {
+      document.getElementById("aiPanel").classList.toggle("open");
+    };
+
+    document.getElementById("btnPreview").onclick = () => {
+      const code = document.getElementById("codeBox").value;
+      if (!code.trim()) return;
+      try {
+        alert("Preview staged (not applied):\n" + code.slice(0, 200) + (code.length > 200 ? "..." : ""));
+        notebook.alerts.push({ time: new Date().toLocaleTimeString(), message: "Code preview staged" });
+        renderNotebook();
+      } catch (e) {
+        notebook.alerts.push({ time: new Date().toLocaleTimeString(), message: "Preview error: " + e.message });
+        renderNotebook();
+      }
+    };
+
+    document.getElementById("btnLog").onclick = () => {
+      const code = document.getElementById("codeBox").value;
+      notebook.log.push({
+        time: new Date().toLocaleTimeString(),
+        agent: "User/AI",
+        summary: code ? "Injected/logged code snippet" : "Manual log entry"
+      });
+      document.getElementById("codeBox").value = "";
+      renderNotebook();
+    };
+
+    // Seed initial log
+    notebook.log.push({ time: new Date().toLocaleTimeString(), agent: "Grok", summary: "Added minimal AI Notebook panel" });
+    renderNotebook();
 
     engine.runRenderLoop(() => scene.render());
     window.addEventListener("resize", () => engine.resize());
