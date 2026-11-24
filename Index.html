@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Babylon Character Workbench</title>
+  <style>
+    * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #1a1c20; font-family: -apple-system, sans-serif; }
+    #renderCanvas { width: 100%; height: 100%; display: block; touch-action: none; }
+
+    /* Left-Thumb Modifier Dock */
+    #leftDock {
+      position: fixed; left: 12px; top: 50%; transform: translateY(-50%);
+      display: flex; flex-direction: column; gap: 10px; z-index: 10;
+    }
+    .dock-btn {
+      width: 68px; height: 56px; border-radius: 12px; border: 1px solid #3a3f4b;
+      background: rgba(28, 31, 38, 0.88); color: #e2e8f0; font-size: 13px; font-weight: 600;
+      display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px);
+    }
+    .dock-btn.active { background: #3b82f6; border-color: #60a5fa; color: #fff; }
+
+    /* Bottom Tool Bar */
+    #bottomBar {
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 8px; padding: 8px 12px; border-radius: 16px;
+      background: rgba(28, 31, 38, 0.9); border: 1px solid #3a3f4b; z-index: 10;
+      backdrop-filter: blur(8px);
+    }
+    .tool-btn {
+      padding: 10px 14px; border-radius: 10px; border: 1px solid #3a3f4b;
+      background: #262a33; color: #e2e8f0; font-size: 13px; font-weight: 600;
+    }
+    .tool-btn.active { background: #f59e0b; border-color: #fbbf24; color: #111; }
+
+    #status {
+      position: fixed; top: 12px; right: 14px; padding: 6px 12px; border-radius: 8px;
+      background: rgba(28, 31, 38, 0.85); color: #94a3b8; font-size: 12px; z-index: 10;
+    }
+  </style>
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+</head>
+<body>
+  <canvas id="renderCanvas"></canvas>
+
+  <div id="status">Fingers: Orbit/Zoom | Pencil: Select &amp; Drag</div>
+
+  <div id="leftDock">
+    <button class="dock-btn" id="btnShift">SHIFT</button>
+    <button class="dock-btn" id="btnCtrl">CTRL</button>
+    <button class="dock-btn" id="btnUndo">UNDO</button>
+    <button class="dock-btn" id="btnRedo">REDO</button>
+  </div>
+
+  <div id="bottomBar">
+    <button class="tool-btn active" id="modeMove">Move</button>
+    <button class="tool-btn" id="modeRotate">Rotate</button>
+    <button class="tool-btn" id="modeScale">Scale</button>
+    <button class="tool-btn" id="addSphere">+ Sphere</button>
+    <button class="tool-btn" id="addSpline">+ Spline</button>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("renderCanvas");
+    const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
+    const scene = new BABYLON.Scene(engine);
+    scene.clearColor = new BABYLON.Color4(0.11, 0.12, 0.14, 1);
+
+    // Camera & Lights
+    const camera = new BABYLON.ArcRotateCamera("cam", -Math.PI / 2, Math.PI / 2.4, 8, BABYLON.Vector3.Zero(), scene);
+    camera.attachControl(canvas, true);
+    camera.wheelPrecision = 40;
+    camera.pinchPrecision = 40;
+    camera.minZ = 0.05;
+
+    const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
+    hemi.intensity = 0.85;
+    const dir = new BABYLON.DirectionalLight("dir", new BABYLON.Vector3(-1, -2, -1), scene);
+    dir.intensity = 0.6;
+
+    // Ground Grid
+    const ground = BABYLON.MeshBuilder.CreateGround("grid", { width: 20, height: 20, subdivisions: 20 }, scene);
+    const gridMat = new BABYLON.StandardMaterial("gridMat", scene);
+    gridMat.wireframe = true;
+    gridMat.emissiveColor = new BABYLON.Color3(0.22, 0.25, 0.3);
+    gridMat.disableLighting = true;
+    ground.material = gridMat;
+    ground.isPickable = false;
+
+    // Materials
+    const clayMat = new BABYLON.StandardMaterial("clayMat", scene);
+    clayMat.diffuseColor = new BABYLON.Color3(0.88, 0.88, 0.9);
+    clayMat.specularColor = new BABYLON.Color3(0.15, 0.15, 0.15);
+
+    const handleMat = new BABYLON.StandardMaterial("handleMat", scene);
+    handleMat.emissiveColor = new BABYLON.Color3(0.96, 0.62, 0.04);
+
+    // Gizmo Manager
+    const gizmoManager = new BABYLON.GizmoManager(scene);
+    gizmoManager.positionGizmoEnabled = true;
+    gizmoManager.rotationGizmoEnabled = false;
+    gizmoManager.scaleGizmoEnabled = false;
+    gizmoManager.usePointerToAttachGizmos = false;
+
+    // State & Undo/Redo
+    const modifiers = { shift: false, ctrl: false };
+    const undoStack = [];
+    const redoStack = [];
+    let dragStartState = null;
+
+    function saveTransform(mesh) {
+      return {
+        mesh,
+        pos: mesh.position.clone(),
+        rot: mesh.rotation.clone(),
+        scl: mesh.scaling.clone()
+      };
+    }
+
+    function applyTransform(state) {
+      state.mesh.position.copyFrom(state.pos);
+      state.mesh.rotation.copyFrom(state.rot);
+      state.mesh.scaling.copyFrom(state.scl);
+      if (state.mesh.metadata && state.mesh.metadata.onMove) state.mesh.metadata.onMove();
+    }
+
+    function hookGizmoEvents() {
+      const gizmos = [gizmoManager.gizmos.positionGizmo, gizmoManager.gizmos.rotationGizmo, gizmoManager.gizmos.scaleGizmo];
+      gizmos.forEach(g => {
+        if (!g || g._hooked) return;
+        g._hooked = true;
+        g.onDragStartObservable.add(() => {
+          if (gizmoManager.attachedMesh) dragStartState = saveTransform(gizmoManager.attachedMesh);
+        });
+        g.onDragObservable.add(() => {
+          const m = gizmoManager.attachedMesh;
+          if (m && m.metadata && m.metadata.onMove) m.metadata.onMove();
+        });
+        g.onDragEndObservable.add(() => {
+          const m = gizmoManager.attachedMesh;
+          if (m && dragStartState) {
+            undoStack.push({ before: dragStartState, after: saveTransform(m) });
+            redoStack.length = 0;
+            dragStartState = null;
+          }
+        });
+      });
+    }
+    hookGizmoEvents();
+
+    // Apple Pencil vs Finger Separation
+    canvas.addEventListener("pointerdown", (evt) => {
+      if (evt.pointerType === "pen" || evt.pointerType === "mouse") {
+        const pick = scene.pick(scene.pointerX, scene.pointerY);
+        if (pick.hit && pick.pickedMesh && pick.pickedMesh.isPickable) {
+          camera.detachControl();
+          gizmoManager.attachToMesh(pick.pickedMesh);
+          hookGizmoEvents();
+        } else if (evt.pointerType === "pen") {
+          gizmoManager.attachToMesh(null);
+        }
+      }
+    });
+
+    window.addEventListener("pointerup", () => {
+      camera.attachControl(canvas, true);
+    });
+
+    // Primitive Spawner
+    let partCount = 0;
+    function spawnSphere(pos = new BABYLON.Vector3(0, 1, 0)) {
+      const s = BABYLON.MeshBuilder.CreateSphere("sphere_" + (++partCount), { diameter: 1.2, segments: 24 }, scene);
+      s.position.copyFrom(pos);
+      s.material = clayMat;
+      gizmoManager.attachToMesh(s);
+      hookGizmoEvents();
+      return s;
+    }
+
+    // Live Editable 3-Point Spline Tube
+    function spawnSpline() {
+      const points = [
+        new BABYLON.Vector3(-1.5, 1.0, 0),
+        new BABYLON.Vector3(0, 1.8, 0.4),
+        new BABYLON.Vector3(1.5, 1.2, 0)
+      ];
+      let tube = null;
+      const handles = [];
+
+      function rebuildTube() {
+        if (tube) tube.dispose();
+        const curve = BABYLON.Curve3.CreateCatmullRomSpline(handles.map(h => h.position), 20);
+        tube = BABYLON.MeshBuilder.CreateTube("splineTube_" + partCount, {
+          path: curve.getPoints(),
+          radius: 0.28,
+          tessellation: 16,
+          cap: BABYLON.Mesh.CAP_ALL
+        }, scene);
+        tube.material = clayMat;
+        tube.isPickable = false;
+      }
+
+      points.forEach((pt, idx) => {
+        const h = BABYLON.MeshBuilder.CreateSphere("ctrl_" + (++partCount) + "_" + idx, { diameter: 0.22 }, scene);
+        h.position.copyFrom(pt);
+        h.material = handleMat;
+        h.metadata = { onMove: rebuildTube };
+        handles.push(h);
+      });
+
+      rebuildTube();
+      gizmoManager.attachToMesh(handles[1]);
+      hookGizmoEvents();
+    }
+
+    // Spawn one starter spline on load
+    spawnSpline();
+
+    // UI Controls
+    function setMode(mode) {
+      gizmoManager.positionGizmoEnabled = (mode === "move");
+      gizmoManager.rotationGizmoEnabled = (mode === "rotate");
+      gizmoManager.scaleGizmoEnabled = (mode === "scale");
+      hookGizmoEvents();
+      ["modeMove", "modeRotate", "modeScale"].forEach(id => document.getElementById(id).classList.remove("active"));
+      document.getElementById("mode" + mode.charAt(0).toUpperCase() + mode.slice(1)).classList.add("active");
+    }
+
+    document.getElementById("modeMove").onclick = () => setMode("move");
+    document.getElementById("modeRotate").onclick = () => setMode("rotate");
+    document.getElementById("modeScale").onclick = () => setMode("scale");
+    document.getElementById("addSphere").onclick = () => spawnSphere();
+    document.getElementById("addSpline").onclick = () => spawnSpline();
+
+    document.getElementById("btnShift").onclick = (e) => {
+      modifiers.shift = !modifiers.shift;
+      e.target.classList.toggle("active", modifiers.shift);
+      if (gizmoManager.gizmos.positionGizmo) gizmoManager.gizmos.positionGizmo.snapDistance = modifiers.shift ? 0.25 : 0;
+      if (gizmoManager.gizmos.rotationGizmo) gizmoManager.gizmos.rotationGizmo.snapDistance = modifiers.shift ? Math.PI / 12 : 0;
+    };
+
+    document.getElementById("btnCtrl").onclick = (e) => {
+      modifiers.ctrl = !modifiers.ctrl;
+      e.target.classList.toggle("active", modifiers.ctrl);
+    };
+
+    document.getElementById("btnUndo").onclick = () => {
+      const action = undoStack.pop();
+      if (!action) return;
+      applyTransform(action.before);
+      redoStack.push(action);
+    };
+
+    document.getElementById("btnRedo").onclick = () => {
+      const action = redoStack.pop();
+      if (!action) return;
+      applyTransform(action.after);
+      undoStack.push(action);
+    };
+
+    engine.runRenderLoop(() => scene.render());
+    window.addEventListener("resize", () => engine.resize());
+  </script>
+</body>
+</html>
